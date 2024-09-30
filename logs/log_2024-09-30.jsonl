@@ -1,0 +1,6 @@
+{"duration_seconds":9,"task":"Задача 2","action":"PAUSE","timestamp":"2024-09-30T17:19:38"}
+{"duration_seconds":0,"task":"Задача 2","action":"RESET","timestamp":"2024-09-30T17:19:40"}
+{"duration_seconds":0,"task":"Задача 2","action":"UPDATE_TASK_NAME","timestamp":"2024-09-30T17:19:44"}
+{"duration_seconds":0,"task":"Задача 2","action":"UPDATE_BREAK_DURATION","timestamp":"2024-09-30T17:19:49"}
+{"duration_seconds":0,"task":"Задача 1","action":"UPDATE_TASK_NAME","timestamp":"2024-09-30T17:19:57"}
+{"duration_seconds":0,"task":"Задача 1","action":"RESET","timestamp":"2024-09-30T17:21:02"}
