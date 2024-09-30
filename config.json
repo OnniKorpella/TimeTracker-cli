@@ -1,0 +1,24 @@
+{
+    "pomodoroSettings": {
+        "longBreakDuration": 15,
+        "cyclesBeforeLongBreak": 4
+    },
+    "currentTaskIndex": 0,
+    "tasks": [
+        {
+            "name": "Задача 1",
+            "breakDuration": 5,
+            "workDuration": 25
+        },
+        {
+            "name": "Задача 2",
+            "breakDuration": 10,
+            "workDuration": 30
+        },
+        {
+            "name": "Navigator",
+            "breakDuration": 10,
+            "workDuration": 45
+        }
+    ]
+}

@@ -1,12 +1,13 @@
 package src;
 
+import javax.imageio.ImageIO;
+import javax.sound.sampled.*;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
-import java.io.IOException;
-import javax.imageio.ImageIO;
 import java.io.File;
+import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
@@ -24,26 +25,36 @@ public class TimerApp {
     private static LoggerUtil logger;
     private static SoundUtil soundUtil;
 
-    private static String currentTaskName = "Задача 1";
-    private static int workDuration = 25; // минуты
-    private static int breakDuration = 5; // минуты
+    // Текущая задача и настройки
+    private static JSONObject currentTask;
+    private static int workDuration; // минуты
+    private static int breakDuration; // минуты
 
-    private static boolean isWorkPeriod = true;
+    // Настройки Pomodoro
+    private static int cyclesBeforeLongBreak;
+    private static int longBreakDuration; // минуты
+    private static int pomodoroCycleCount = 0;
+
+    // Состояние таймера
     private static boolean isPaused = false;
+
+    private enum TimerState {
+        WORK,
+        SHORT_BREAK,
+        LONG_BREAK
+    }
+
+    private static TimerState timerState = TimerState.WORK;
 
     private static Timer swingTimer;
     private static int elapsedSeconds = 0;
-    private static int remainingSeconds = workDuration * 60;
+    private static int remainingSeconds;
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             debugLog("Запуск приложения...");
             // Загрузка конфигурации
-            JSONObject config = ConfigUtil.loadConfig();
-            currentTaskName = config.getString("taskName");
-            workDuration = config.getInt("workDuration");
-            breakDuration = config.getInt("breakDuration");
-            remainingSeconds = isWorkPeriod ? workDuration * 60 : breakDuration * 60;
+            loadConfigurations();
 
             // Инициализация логгера и звуков
             logger = new LoggerUtil();
@@ -55,6 +66,24 @@ public class TimerApp {
             // Запуск таймера
             startTimer();
         });
+    }
+
+    private static void loadConfigurations() {
+        // Загрузка текущей задачи
+        currentTask = ConfigUtil.getCurrentTask();
+        workDuration = currentTask.getInt("workDuration");
+        breakDuration = currentTask.getInt("breakDuration");
+
+        // Загрузка настроек Pomodoro
+        JSONObject pomodoroSettings = ConfigUtil.loadPomodoroSettings();
+        cyclesBeforeLongBreak = pomodoroSettings.getInt("cyclesBeforeLongBreak");
+        longBreakDuration = pomodoroSettings.getInt("longBreakDuration");
+
+        // Инициализация состояния таймера
+        timerState = TimerState.WORK;
+        remainingSeconds = workDuration * 60;
+        elapsedSeconds = 0;
+        pomodoroCycleCount = 0;
     }
 
     private static void setupTrayIcon() {
@@ -85,7 +114,7 @@ public class TimerApp {
         trayMenu = new PopupMenu();
 
         // MenuItem для отображения таймера
-        trayTimerMenuItem = new MenuItem("Таймер: 00:00 / 00:25");
+        trayTimerMenuItem = new MenuItem("Таймер: 00:00 / " + formatTime(workDuration * 60));
         trayMenu.add(trayTimerMenuItem);
 
         trayMenu.addSeparator();
@@ -95,12 +124,21 @@ public class TimerApp {
 
         // Подменю для выбора задачи
         Menu taskMenu = new Menu("Название задачи");
-        String[] taskNames = {"Задача 1", "Задача 2", "Задача 3"};
-        for (String taskName : taskNames) {
+        List<JSONObject> tasks = ConfigUtil.loadTasks();
+        for (int i = 0; i < tasks.size(); i++) {
+            JSONObject task = tasks.get(i);
+            String taskName = task.getString("name");
             MenuItem taskItem = new MenuItem(taskName);
-            taskItem.addActionListener(e -> updateTaskName(taskName));
+            int taskIndex = i; // Для использования внутри лямбды
+            taskItem.addActionListener(e -> updateTask(taskIndex));
             taskMenu.add(taskItem);
         }
+
+        // Добавить кнопку для добавления новой задачи
+        MenuItem addTaskItem = new MenuItem("Добавить задачу");
+        addTaskItem.addActionListener(e -> showAddTaskDialog());
+        taskMenu.addSeparator();
+        taskMenu.add(addTaskItem);
         settingsMenu.add(taskMenu);
 
         // Подменю для времени работы
@@ -111,6 +149,11 @@ public class TimerApp {
             durationItem.addActionListener(e -> updateWorkDuration(duration));
             workDurationMenu.add(durationItem);
         }
+        // Добавление возможности пользовательского ввода
+        MenuItem customWorkDurationItem = new MenuItem("Другое...");
+        customWorkDurationItem.addActionListener(e -> showCustomWorkDurationDialog());
+        workDurationMenu.addSeparator();
+        workDurationMenu.add(customWorkDurationItem);
         settingsMenu.add(workDurationMenu);
 
         // Подменю для времени перерыва
@@ -121,7 +164,27 @@ public class TimerApp {
             durationItem.addActionListener(e -> updateBreakDuration(duration));
             breakDurationMenu.add(durationItem);
         }
+        // Добавление возможности пользовательского ввода
+        MenuItem customBreakDurationItem = new MenuItem("Другое...");
+        customBreakDurationItem.addActionListener(e -> showCustomBreakDurationDialog());
+        breakDurationMenu.addSeparator();
+        breakDurationMenu.add(customBreakDurationItem);
         settingsMenu.add(breakDurationMenu);
+
+        // Подменю для настроек Pomodoro
+        Menu pomodoroSettingsMenu = new Menu("Настройки Pomodoro");
+
+        // Пункт для установки количества циклов перед длинным перерывом
+        MenuItem setCyclesItem = new MenuItem("Циклов перед длинным перерывом");
+        setCyclesItem.addActionListener(e -> showSetCyclesDialog());
+        pomodoroSettingsMenu.add(setCyclesItem);
+
+        // Пункт для установки длительности длинного перерыва
+        MenuItem setLongBreakItem = new MenuItem("Длительность длинного перерыва (мин)");
+        setLongBreakItem.addActionListener(e -> showSetLongBreakDialog());
+        pomodoroSettingsMenu.add(setLongBreakItem);
+
+        settingsMenu.add(pomodoroSettingsMenu);
 
         trayMenu.add(settingsMenu);
 
@@ -190,31 +253,54 @@ public class TimerApp {
 
     private static void handlePeriodEnd() {
         // Логирование окончания периода
-        String action = isWorkPeriod ? "END_WORK" : "END_BREAK";
-        logger.log(currentTaskName, action, elapsedSeconds);
+        String action = "";
+        if (timerState == TimerState.WORK) {
+            action = "END_WORK";
+        } else if (timerState == TimerState.SHORT_BREAK) {
+            action = "END_BREAK";
+        } else if (timerState == TimerState.LONG_BREAK) {
+            action = "END_LONG_BREAK";
+        }
+        logger.log(currentTask.getString("name"), action, elapsedSeconds);
 
         // Воспроизведение звука
-        soundUtil.playSound(isWorkPeriod ? "resources/end_work.wav" : "resources/end_break.wav");
+        String soundPath = "";
+        if (timerState == TimerState.WORK) {
+            soundPath = "resources/end_work.wav";
+        } else if (timerState == TimerState.SHORT_BREAK) {
+            soundPath = "resources/end_break.wav";
+        } else if (timerState == TimerState.LONG_BREAK) {
+            soundPath = "resources/end_long_break.wav";
+        }
+        soundUtil.playSound(soundPath);
 
-        // Отправка уведомления
-        if (isWorkPeriod) {
-            sendNotification("Перерыв", "Рабочий период завершён. Время перерыва: " + breakDuration + " минут.");
-            // Переключение на перерыв
-            isWorkPeriod = false;
-            remainingSeconds = breakDuration * 60;
-            elapsedSeconds = 0;
-            logger.log(currentTaskName, "START_BREAK", 0);
-            soundUtil.playSound("resources/start_break.wav");
-            sendNotification("Начало перерыва", "Начался перерыв: " + breakDuration + " минут.");
+        // Отправка уведомления и переключение периода
+        if (timerState == TimerState.WORK) {
+            pomodoroCycleCount++;
+            if (pomodoroCycleCount >= cyclesBeforeLongBreak) {
+                // Начало длинного перерыва
+                timerState = TimerState.LONG_BREAK;
+                remainingSeconds = longBreakDuration * 60;
+                pomodoroCycleCount = 0; // Сброс счетчика
+                logger.log(currentTask.getString("name"), "START_LONG_BREAK", 0);
+                soundUtil.playSound("resources/start_long_break.wav");
+                sendNotification("Длинный Перерыв", "Начался длинный перерыв: " + longBreakDuration + " минут.");
+            } else {
+                // Начало короткого перерыва
+                timerState = TimerState.SHORT_BREAK;
+                remainingSeconds = breakDuration * 60;
+                logger.log(currentTask.getString("name"), "START_BREAK", 0);
+                soundUtil.playSound("resources/start_break.wav");
+                sendNotification("Перерыв", "Начался перерыв: " + breakDuration + " минут.");
+            }
         } else {
-            sendNotification("Работа", "Перерыв завершён. Возвращайтесь к задаче: " + currentTaskName + ".");
-            // Переключение на работу
-            isWorkPeriod = true;
+            // Начало рабочего периода
+            timerState = TimerState.WORK;
             remainingSeconds = workDuration * 60;
             elapsedSeconds = 0;
-            logger.log(currentTaskName, "START_WORK", 0);
+            logger.log(currentTask.getString("name"), "START_WORK", 0);
             soundUtil.playSound("resources/start_work.wav");
-            sendNotification("Начало работы", "Началась задача: " + currentTaskName + ". Время работы: " + workDuration + " минут.");
+            sendNotification("Начало Работы", "Началась задача: " + currentTask.getString("name") + ". Время работы: " + workDuration + " минут.");
         }
 
         // Обновление Tray MenuItem
@@ -267,8 +353,15 @@ public class TimerApp {
     public static void togglePause() {
         isPaused = !isPaused;
         String status = isPaused ? "Пауза" : "Продолжить";
-        trayMenu.getItem(2).setLabel(isPaused ? "Продолжить" : "Пауза");
-        logger.log(currentTaskName, isPaused ? "PAUSE" : "RESUME", elapsedSeconds);
+        // Найти соответствующий MenuItem и обновить его метку
+        for (int i = 0; i < trayMenu.getItemCount(); i++) {
+            MenuItem item = trayMenu.getItem(i);
+            if (item.getLabel().equals("Пауза") || item.getLabel().equals("Продолжить")) {
+                item.setLabel(isPaused ? "Продолжить" : "Пауза");
+                break;
+            }
+        }
+        logger.log(currentTask.getString("name"), isPaused ? "PAUSE" : "RESUME", elapsedSeconds);
         soundUtil.playSound(isPaused ? "resources/pause.wav" : "resources/resume.wav");
         sendNotification(isPaused ? "Пауза" : "Продолжение", isPaused ? "Таймер поставлен на паузу." : "Таймер возобновлён.");
     }
@@ -276,11 +369,20 @@ public class TimerApp {
     public static void resetTimer() {
         swingTimer.stop();
         elapsedSeconds = 0;
-        remainingSeconds = isWorkPeriod ? workDuration * 60 : breakDuration * 60;
+        remainingSeconds = (timerState == TimerState.WORK) ? workDuration * 60 :
+                (timerState == TimerState.SHORT_BREAK) ? breakDuration * 60 :
+                        longBreakDuration * 60;
         updateTrayTimer(elapsedSeconds, remainingSeconds);
         isPaused = false;
-        trayMenu.getItem(2).setLabel("Пауза");
-        logger.log(currentTaskName, "RESET", 0);
+        // Обновить метку "Пауза" на начальное состояние
+        for (int i = 0; i < trayMenu.getItemCount(); i++) {
+            MenuItem item = trayMenu.getItem(i);
+            if (item.getLabel().equals("Пауза") || item.getLabel().equals("Продолжить")) {
+                item.setLabel("Пауза");
+                break;
+            }
+        }
+        logger.log(currentTask.getString("name"), "RESET", 0);
         soundUtil.playSound("resources/reset.wav");
         sendNotification("Сброс", "Таймер сброшен.");
         swingTimer.start();
@@ -290,13 +392,18 @@ public class TimerApp {
     }
 
     public static void updateSettings(String taskName, int newWorkDuration, int newBreakDuration) {
-        currentTaskName = taskName;
+        currentTask = ConfigUtil.getCurrentTask();
+        currentTask.put("name", taskName);
+        currentTask.put("workDuration", newWorkDuration);
+        currentTask.put("breakDuration", newBreakDuration);
         workDuration = newWorkDuration;
         breakDuration = newBreakDuration;
-        remainingSeconds = isWorkPeriod ? workDuration * 60 : breakDuration * 60;
+        remainingSeconds = (timerState == TimerState.WORK) ? workDuration * 60 :
+                (timerState == TimerState.SHORT_BREAK) ? breakDuration * 60 :
+                        longBreakDuration * 60;
         elapsedSeconds = 0;
         updateTrayTimer(elapsedSeconds, remainingSeconds);
-        logger.log(currentTaskName, "UPDATE_SETTINGS", 0);
+        logger.log(taskName, "UPDATE_SETTINGS", 0);
         soundUtil.playSound("resources/settings.wav");
         sendNotification("Настройки", "Настройки обновлены.");
 
@@ -306,31 +413,40 @@ public class TimerApp {
 
     private static void saveConfig() {
         JSONObject config = new JSONObject();
-        config.put("taskName", currentTaskName);
-        config.put("workDuration", workDuration);
-        config.put("breakDuration", breakDuration);
+        config.put("tasks", ConfigUtil.loadConfig().getJSONArray("tasks"));
+        config.put("currentTaskIndex", ConfigUtil.loadConfig().getInt("currentTaskIndex"));
+        JSONObject pomodoroSettings = new JSONObject();
+        pomodoroSettings.put("cyclesBeforeLongBreak", cyclesBeforeLongBreak);
+        pomodoroSettings.put("longBreakDuration", longBreakDuration);
+        config.put("pomodoroSettings", pomodoroSettings);
         ConfigUtil.saveConfig(config);
     }
 
-    private static void updateTaskName(String taskName) {
-        currentTaskName = taskName;
+    private static void updateTask(int taskIndex) {
+        ConfigUtil.setCurrentTaskIndex(taskIndex);
+        currentTask = ConfigUtil.getCurrentTask();
+        workDuration = currentTask.getInt("workDuration");
+        breakDuration = currentTask.getInt("breakDuration");
+        remainingSeconds = (timerState == TimerState.WORK) ? workDuration * 60 :
+                (timerState == TimerState.SHORT_BREAK) ? breakDuration * 60 :
+                        longBreakDuration * 60;
         elapsedSeconds = 0;
-        remainingSeconds = isWorkPeriod ? workDuration * 60 : breakDuration * 60;
         updateTrayTimer(elapsedSeconds, remainingSeconds);
-        logger.log(currentTaskName, "UPDATE_TASK_NAME", 0);
+        logger.log(currentTask.getString("name"), "UPDATE_TASK", 0);
         soundUtil.playSound("resources/settings.wav");
-        sendNotification("Название задачи обновлено", "Текущая задача: " + currentTaskName);
+        sendNotification("Задача обновлена", "Текущая задача: " + currentTask.getString("name"));
         saveConfig();
     }
 
     private static void updateWorkDuration(int duration) {
         workDuration = duration;
-        if (isWorkPeriod) {
+        if (timerState == TimerState.WORK) {
             remainingSeconds = workDuration * 60;
             elapsedSeconds = 0;
             updateTrayTimer(elapsedSeconds, remainingSeconds);
         }
-        logger.log(currentTaskName, "UPDATE_WORK_DURATION", 0);
+        currentTask.put("workDuration", workDuration);
+        logger.log(currentTask.getString("name"), "UPDATE_WORK_DURATION", 0);
         soundUtil.playSound("resources/settings.wav");
         sendNotification("Время работы обновлено", "Новое время работы: " + workDuration + " минут");
         saveConfig();
@@ -338,12 +454,13 @@ public class TimerApp {
 
     private static void updateBreakDuration(int duration) {
         breakDuration = duration;
-        if (!isWorkPeriod) {
+        if (timerState == TimerState.SHORT_BREAK) {
             remainingSeconds = breakDuration * 60;
             elapsedSeconds = 0;
             updateTrayTimer(elapsedSeconds, remainingSeconds);
         }
-        logger.log(currentTaskName, "UPDATE_BREAK_DURATION", 0);
+        currentTask.put("breakDuration", breakDuration);
+        logger.log(currentTask.getString("name"), "UPDATE_BREAK_DURATION", 0);
         soundUtil.playSound("resources/settings.wav");
         sendNotification("Время перерыва обновлено", "Новое время перерыва: " + breakDuration + " минут");
         saveConfig();
@@ -415,26 +532,21 @@ public class TimerApp {
                     case "START_BREAK":
                         currentPeriod = "break";
                         break;
+                    case "START_LONG_BREAK":
+                        currentPeriod = "break";
+                        break;
                     case "END_WORK":
                     case "PAUSE":
                     case "RESET":
                         if (currentPeriod.equals("work")) {
                             totalWorkSeconds += duration;
-                            if (action.equals("RESET")) {
-                                currentPeriod = "unknown";
-                            } else {
-                                currentPeriod = "unknown"; // После PAUSE и END_WORK переходим в unknown
-                            }
+                            currentPeriod = "unknown"; // После PAUSE и END_WORK переходим в unknown
                         }
                         break;
                     case "END_BREAK":
                         if (currentPeriod.equals("break")) {
                             totalBreakSeconds += duration;
-                            if (action.equals("RESET")) {
-                                currentPeriod = "unknown";
-                            } else {
-                                currentPeriod = "unknown"; // После PAUSE и END_BREAK переходим в unknown
-                            }
+                            currentPeriod = "unknown"; // После PAUSE и END_BREAK переходим в unknown
                         }
                         break;
                     // Дополнительные действия можно обработать здесь
@@ -453,5 +565,160 @@ public class TimerApp {
             e.printStackTrace();
             return "Ошибка при получении статистики.";
         }
+    }
+
+    // Методы для добавления задач и настроек
+    private static void showAddTaskDialog() {
+        JTextField taskNameField = new JTextField();
+        JTextField workDurationField = new JTextField();
+        JTextField breakDurationField = new JTextField();
+
+        Object[] message = {
+                "Название задачи:", taskNameField,
+                "Время работы (мин):", workDurationField,
+                "Время перерыва (мин):", breakDurationField
+        };
+
+        int option = JOptionPane.showConfirmDialog(null, message, "Добавить Задачу", JOptionPane.OK_CANCEL_OPTION);
+        if (option == JOptionPane.OK_OPTION) {
+            String taskName = taskNameField.getText().trim();
+            String workDurationStr = workDurationField.getText().trim();
+            String breakDurationStr = breakDurationField.getText().trim();
+
+            if (taskName.isEmpty() || workDurationStr.isEmpty() || breakDurationStr.isEmpty()) {
+                JOptionPane.showMessageDialog(null, "Все поля обязательны для заполнения.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            try {
+                int workDur = Integer.parseInt(workDurationStr);
+                int breakDur = Integer.parseInt(breakDurationStr);
+
+                if (workDur <= 0 || breakDur <= 0) {
+                    JOptionPane.showMessageDialog(null, "Длительности должны быть положительными числами.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                JSONObject newTask = new JSONObject();
+                newTask.put("name", taskName);
+                newTask.put("workDuration", workDur);
+                newTask.put("breakDuration", breakDur);
+
+                List<JSONObject> tasks = ConfigUtil.loadTasks();
+                tasks.add(newTask);
+                ConfigUtil.saveTasks(tasks);
+
+                // Обновить интерфейс меню задач
+                rebuildTaskMenu();
+
+                sendNotification("Задача добавлена", "Новая задача: " + taskName);
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(null, "Время должно быть числом.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void showSetCyclesDialog() {
+        String input = JOptionPane.showInputDialog(null, "Введите количество циклов перед длинным перерывом:", cyclesBeforeLongBreak);
+        if (input != null) {
+            try {
+                int cycles = Integer.parseInt(input.trim());
+                if (cycles > 0) {
+                    cyclesBeforeLongBreak = cycles;
+                    logger.log(currentTask.getString("name"), "UPDATE_CYCLES_BEFORE_LONG_BREAK", 0);
+                    soundUtil.playSound("resources/settings.wav");
+                    sendNotification("Настройки Pomodoro", "Количество циклов перед длинным перерывом установлено на " + cycles + ".");
+                    saveConfig();
+                } else {
+                    JOptionPane.showMessageDialog(null, "Введите положительное число.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(null, "Неверный формат числа.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void showSetLongBreakDialog() {
+        String input = JOptionPane.showInputDialog(null, "Введите длительность длинного перерыва (мин):", longBreakDuration);
+        if (input != null) {
+            try {
+                int duration = Integer.parseInt(input.trim());
+                if (duration > 0) {
+                    longBreakDuration = duration;
+                    logger.log(currentTask.getString("name"), "UPDATE_LONG_BREAK_DURATION", 0);
+                    soundUtil.playSound("resources/settings.wav");
+                    sendNotification("Настройки Pomodoro", "Длительность длинного перерыва установлена на " + duration + " минут.");
+                    saveConfig();
+                } else {
+                    JOptionPane.showMessageDialog(null, "Введите положительное число.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(null, "Неверный формат числа.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void showCustomWorkDurationDialog() {
+        String input = JOptionPane.showInputDialog(null, "Введите время работы (мин):", workDuration);
+        if (input != null) {
+            try {
+                int duration = Integer.parseInt(input.trim());
+                if (duration > 0) {
+                    updateWorkDuration(duration);
+                } else {
+                    JOptionPane.showMessageDialog(null, "Введите положительное число.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(null, "Неверный формат числа.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void showCustomBreakDurationDialog() {
+        String input = JOptionPane.showInputDialog(null, "Введите время перерыва (мин):", breakDuration);
+        if (input != null) {
+            try {
+                int duration = Integer.parseInt(input.trim());
+                if (duration > 0) {
+                    updateBreakDuration(duration);
+                } else {
+                    JOptionPane.showMessageDialog(null, "Введите положительное число.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(null, "Неверный формат числа.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void rebuildTaskMenu() {
+        // Удаление старого меню задач
+        for (int i = 0; i < trayMenu.getItemCount(); i++) {
+            MenuItem item = trayMenu.getItem(i);
+            if (item instanceof Menu && item.getLabel().equals("Название задачи")) {
+                trayMenu.remove(i);
+                break;
+            }
+        }
+
+        // Создание нового меню задач
+        Menu taskMenu = new Menu("Название задачи");
+        List<JSONObject> tasks = ConfigUtil.loadTasks();
+        for (int i = 0; i < tasks.size(); i++) {
+            JSONObject task = tasks.get(i);
+            String taskName = task.getString("name");
+            MenuItem taskItem = new MenuItem(taskName);
+            int taskIndex = i; // Для использования внутри лямбды
+            taskItem.addActionListener(e -> updateTask(taskIndex));
+            taskMenu.add(taskItem);
+        }
+
+        // Добавить кнопку для добавления новой задачи
+        MenuItem addTaskItem = new MenuItem("Добавить задачу");
+        addTaskItem.addActionListener(e -> showAddTaskDialog());
+        taskMenu.addSeparator();
+        taskMenu.add(addTaskItem);
+
+        // Добавление нового меню задач в trayMenu
+        trayMenu.insert(taskMenu, 2); // Вставка после таймера и разделителя
     }
 }
